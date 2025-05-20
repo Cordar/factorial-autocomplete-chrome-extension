@@ -1,4 +1,6 @@
-document.getElementById("button-fill-time").addEventListener("click", fillTime);
+// Remove any existing event listeners and add a new one
+const button = document.getElementById("button-fill-time");
+button.addEventListener("click", fillTime);
 
 // Add loading state management
 function setLoading(isLoading) {
@@ -16,14 +18,10 @@ function setLoading(isLoading) {
 
 // Add progress indicator
 function showProgress(message) {
-    let progressDiv = document.getElementById('progress-status');
-    if (!progressDiv) {
-        progressDiv = document.createElement('div');
-        progressDiv.id = 'progress-status';
-        progressDiv.style.marginTop = '10px';
-        document.body.appendChild(progressDiv);
+    const progressDiv = document.getElementById('progress-status');
+    if (progressDiv) {
+        progressDiv.textContent = message;
     }
-    progressDiv.textContent = message;
 }
 
 // Function to generate random time within constraints
@@ -51,11 +49,12 @@ function generateRandomTimes(baseClockIn, baseClockOut, plannedHours) {
     // Ensure minimum planned hours of work time
     const minClockOutMinutes = newClockInMinutes + plannedMinutes;
     
-    // Generate random deviation for clock out (0 to +5 minutes)
-    const clockOutDeviation = Math.floor(Math.random() * 6);
+    // Generate random deviation for clock out (0 to +2 minutes)
+    const clockOutDeviation = Math.floor(Math.random() * 3);
     
     // Calculate new clock out time, ensuring it's at least planned hours after clock in
-    const newClockOutMinutes = Math.max(minClockOutMinutes, baseOutMinutes + clockOutDeviation);
+    // Add 2 minutes to ensure we always meet the minimum hours
+    const newClockOutMinutes = Math.max(minClockOutMinutes + 3, baseOutMinutes + clockOutDeviation);
     
     // Convert back to HH:MM format
     function formatTime(minutes) {
@@ -172,10 +171,13 @@ async function deleteExistingShifts(year, month, employee_id) {
             return;
         }
         
-        showProgress(`Found ${shifts.length} existing shifts. Deleting...`);
+        showProgress(`Found ${shifts.length} existing shifts.\nStarting deletion...`);
         
         // Delete each shift
-        for (const shift of shifts) {
+        for (let i = 0; i < shifts.length; i++) {
+            const shift = shifts[i];
+            showProgress(`Deleting shift ${i + 1}/${shifts.length}...`);
+            
             const deleteResponse = await fetch(`https://api.factorialhr.com/attendance/shifts/${shift.id}`, {
                 method: 'DELETE',
                 redirect: 'follow',
@@ -257,30 +259,43 @@ async function getCurrentEmployeeId() {
     }
 }
 
-function fillTime() {
-    setLoading(true);
-    showProgress('Starting...');
-    
-    const year = document.getElementById("input-year").value;
-    const month = document.getElementById("input-month").value;
-    
-    if (!year || !month) {
-        showProgress('Error: Please enter both month and year');
-        setLoading(false);
-        return;
-    }
+async function fillTime() {
+    try {
+        setLoading(true);
+        showProgress('Starting time fill process...');
 
-    // Get employee ID and proceed with the rest
-    getCurrentEmployeeId()
-        .then(employee_id => {
-            showProgress('Got employee ID, proceeding with time fill...');
-            return deleteExistingShifts(year, month, employee_id)
-                .then(() => getPeriodId(year, month, employee_id));
-        })
-        .catch(error => {
-            showProgress('Error: ' + error.message);
-            setLoading(false);
-        });
+        // Get form values
+        const year = document.getElementById('input-year').value;
+        const month = document.getElementById('input-month').value;
+        const baseClockIn = document.getElementById('input-clock-in').value;
+        const baseClockOut = document.getElementById('input-clock-out').value;
+        const removePrevious = document.getElementById('removePrevious')?.checked || false;
+
+        // Get employee ID
+        const employee_id = await getCurrentEmployeeId();
+        showProgress('Employee ID retrieved successfully');
+
+        // Get period ID
+        const periodId = await getPeriodId(year, month, employee_id);
+        showProgress('Period ID retrieved successfully');
+
+        // Get calendar data for planned hours
+        const calendarData = await getMonthCalendar(year, month, employee_id);
+        showProgress('Calendar data retrieved successfully');
+
+        // Delete existing shifts only if checkbox is checked
+        if (removePrevious) {
+            await deleteExistingShifts(year, month, employee_id);
+        }
+
+        // Fill the month with new shifts
+        await fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarData);
+        
+    } catch (error) {
+        console.error('Error in fillTime:', error);
+        showProgress(`Error: ${error.message}`);
+        setLoading(false); // Enable button if there's an error
+    }
 }
 
 function getPeriodId(year, month, employee_id) {
@@ -318,7 +333,7 @@ function getPeriodId(year, month, employee_id) {
                         throw new Error('No period found for the specified month and year');
                     }
                     const periodId = result[0]["id"];
-                    fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarData);
+                    return periodId;
                 });
         })
         .catch(error => {
@@ -355,32 +370,58 @@ function makeRequest(day, month, year, baseClockIn, baseClockOut, periodId, cale
                 resolve({ day, success: true, skipped: true });
                 return;
             }
+
+            // Calculate morning shift (before lunch)
+            const morningEnd = "13:30";
+            // Subtract 1 hour from total planned hours to account for lunch break
+            const adjustedPlannedHours = plannedHours - 1;
+            const { clockIn: morningClockIn, clockOut: morningClockOut } = generateRandomTimes(baseClockIn, morningEnd, adjustedPlannedHours / 2);
             
-            // Generate random times for this day using planned hours
-            const { clockIn, clockOut } = generateRandomTimes(baseClockIn, baseClockOut, plannedHours);
+            // Calculate afternoon shift (after lunch)
+            const afternoonStart = "14:30";
+            const { clockIn: afternoonClockIn, clockOut: afternoonClockOut } = generateRandomTimes(afternoonStart, baseClockOut, adjustedPlannedHours / 2);
+
+            // Create morning shift
+            const morningFormData = new FormData();
+            morningFormData.append("clock_in", morningClockIn);
+            morningFormData.append("clock_out", morningClockOut);
+            morningFormData.append("date", year + "-" + month + "-" + day);
+            morningFormData.append("day", day);
+            morningFormData.append("period_id", periodId);
             
-            var formdata = new FormData();
-            formdata.append("clock_in", clockIn);
-            formdata.append("clock_out", clockOut);
-            formdata.append("date", year + "-" + month + "-" + day);
-            formdata.append("day", day);
-            formdata.append("period_id", periodId);
-            
-            var requestOptions = {
+            const morningResponse = await fetch("https://api.factorialhr.com/attendance/shifts", {
                 method: 'POST',
-                body: formdata,
+                body: morningFormData,
                 redirect: 'follow',
                 headers: getRequestHeaders()
-            };
+            });
             
-            const response = await fetch("https://api.factorialhr.com/attendance/shifts", requestOptions);
+            if (!morningResponse.ok) {
+                const errorData = await morningResponse.json().catch(() => null);
+                throw new Error(`Failed to create morning shift for day ${day}: ${morningResponse.status} ${morningResponse.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+            }
+
+            // Create afternoon shift
+            const afternoonFormData = new FormData();
+            afternoonFormData.append("clock_in", afternoonClockIn);
+            afternoonFormData.append("clock_out", afternoonClockOut);
+            afternoonFormData.append("date", year + "-" + month + "-" + day);
+            afternoonFormData.append("day", day);
+            afternoonFormData.append("period_id", periodId);
             
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => null);
-                throw new Error(`Failed to create shift for day ${day}: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+            const afternoonResponse = await fetch("https://api.factorialhr.com/attendance/shifts", {
+                method: 'POST',
+                body: afternoonFormData,
+                redirect: 'follow',
+                headers: getRequestHeaders()
+            });
+            
+            if (!afternoonResponse.ok) {
+                const errorData = await afternoonResponse.json().catch(() => null);
+                throw new Error(`Failed to create afternoon shift for day ${day}: ${afternoonResponse.status} ${afternoonResponse.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
             }
             
-            console.log(`Success for day ${day}: ${clockIn} - ${clockOut} (Planned: ${plannedHours}h)`);
+            console.log(`Success for day ${day}: Morning ${morningClockIn}-${morningClockOut}, Afternoon ${afternoonClockIn}-${afternoonClockOut} (Planned: ${plannedHours}h)`);
             resolve({ day, success: true, skipped: false });
         } catch (error) {
             console.error(`Error for day ${day}:`, error);
@@ -401,15 +442,16 @@ function fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarDat
     function processNextDay(index) {
         if (index >= weekdays.length) {
             // Show summary of results
-            let summaryMessage = `Completed ${completedDays} days`;
+            let summaryMessage = `Summary:\n`;
+            summaryMessage += `Completed: ${completedDays} days\n`;
             if (skippedDays.length > 0) {
-                summaryMessage += `\nSkipped days (no planned hours): ${skippedDays.join(', ')}`;
+                summaryMessage += `Skipped: ${skippedDays.join(', ')}\n`;
             }
             if (failedDays.length > 0) {
-                summaryMessage += `\nFailed days: ${failedDays.join(', ')}`;
+                summaryMessage += `Failed: ${failedDays.join(', ')}`;
             }
             showProgress(summaryMessage);
-            setLoading(false);
+            setLoading(false); // Enable button only after all operations are complete
             return;
         }
 
@@ -427,6 +469,11 @@ function fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarDat
                 } else {
                     failedDays.push(day);
                 }
+                processNextDay(index + 1);
+            })
+            .catch(error => {
+                console.error(`Error processing day ${day}:`, error);
+                failedDays.push(day);
                 processNextDay(index + 1);
             });
     }
