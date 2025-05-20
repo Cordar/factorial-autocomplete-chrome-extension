@@ -1,47 +1,332 @@
 document.getElementById("button-fill-time").addEventListener("click", fillTime);
 
-function fillTime()
-{
+// Add loading state management
+function setLoading(isLoading) {
+    const button = document.getElementById("button-fill-time");
+    const loadingText = "Loading...";
+    if (isLoading) {
+        button.disabled = true;
+        button.dataset.originalText = button.textContent;
+        button.textContent = loadingText;
+    } else {
+        button.disabled = false;
+        button.textContent = button.dataset.originalText;
+    }
+}
+
+// Add progress indicator
+function showProgress(message) {
+    let progressDiv = document.getElementById('progress-status');
+    if (!progressDiv) {
+        progressDiv = document.createElement('div');
+        progressDiv.id = 'progress-status';
+        progressDiv.style.marginTop = '10px';
+        document.body.appendChild(progressDiv);
+    }
+    progressDiv.textContent = message;
+}
+
+// Function to generate random time within constraints
+function generateRandomTimes(baseClockIn, baseClockOut, plannedHours) {
+    // Parse base times
+    const [baseInHour, baseInMin] = baseClockIn.split(':').map(Number);
+    const [baseOutHour, baseOutMin] = baseClockOut.split(':').map(Number);
+    
+    // Convert to minutes for easier calculation
+    const baseInMinutes = baseInHour * 60 + baseInMin;
+    const baseOutMinutes = baseOutHour * 60 + baseOutMin;
+    
+    // Calculate base work duration
+    const baseWorkDuration = baseOutMinutes - baseInMinutes;
+    
+    // Generate random deviation for clock in (-5 to +5 minutes)
+    const clockInDeviation = Math.floor(Math.random() * 11) - 5;
+    
+    // Calculate new clock in time
+    const newClockInMinutes = baseInMinutes + clockInDeviation;
+    
+    // Convert planned hours to minutes
+    const plannedMinutes = Math.round(plannedHours * 60);
+    
+    // Ensure minimum planned hours of work time
+    const minClockOutMinutes = newClockInMinutes + plannedMinutes;
+    
+    // Generate random deviation for clock out (0 to +5 minutes)
+    const clockOutDeviation = Math.floor(Math.random() * 6);
+    
+    // Calculate new clock out time, ensuring it's at least planned hours after clock in
+    const newClockOutMinutes = Math.max(minClockOutMinutes, baseOutMinutes + clockOutDeviation);
+    
+    // Convert back to HH:MM format
+    function formatTime(minutes) {
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+    }
+    
+    return {
+        clockIn: formatTime(newClockInMinutes),
+        clockOut: formatTime(newClockOutMinutes)
+    };
+}
+
+// Function to get cookies from browser
+function getCookies() {
+    return document.cookie;
+}
+
+// Function to get request headers
+function getRequestHeaders() {
+    return {
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'ca,es;q=0.9,en;q=0.8,de;q=0.7',
+        'cookie': document.cookie,
+        'dnt': '1',
+        'origin': 'https://app.factorialhr.com',
+        'referer': 'https://app.factorialhr.com/',
+        'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-site',
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        'x-deployment-phase': 'default',
+        'x-factorial-access': '2228783',
+        'x-factorial-origin': 'web',
+        'x-factorial-version': 'fb8cebd66ad5ee23500af66255a2bc82d7e33125'
+    };
+}
+
+// Function to get planned hours for the entire month
+async function getMonthCalendar(year, month, employee_id) {
+    try {
+        // Get the first and last day of the month
+        const firstDay = new Date(year, month - 1, 1);
+        const lastDay = new Date(year, month, 0);
+        
+        // Format dates as YYYY-MM-DD
+        const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
+        const endDate = `${year}-${month.toString().padStart(2, '0')}-${lastDay.getDate().toString().padStart(2, '0')}`;
+        
+        const response = await fetch(`https://api.factorialhr.com/attendance/calendar?start_on=${startDate}&end_on=${endDate}&id=${employee_id}`, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: getRequestHeaders()
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(`Failed to fetch calendar data: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+        }
+        
+        const data = await response.json();
+        return data;
+    } catch (error) {
+        console.error('Error fetching calendar data:', error);
+        throw error;
+    }
+}
+
+// Function to get planned hours for a specific day from calendar data
+function getPlannedHoursForDay(calendarData, year, month, day) {
+    const dateStr = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+    const dayData = calendarData.find(d => d.date === dateStr);
+    
+    if (!dayData) {
+        return 8; // Default to 8 hours if no data found
+    }
+    
+    if (!dayData.is_laborable) {
+        return 0;
+    }
+    
+    if (dayData.is_leave) {
+        return dayData.leaves[0]?.hours_amount || 0;
+    }
+    
+    return 8; // Default to 8 hours if no specific hours found
+}
+
+// Function to delete existing shifts
+async function deleteExistingShifts(year, month, employee_id) {
+    showProgress('Checking for existing shifts...');
+    
+    try {
+        // Get all shifts for the month
+        const response = await fetch(`https://api.factorialhr.com/attendance/shifts?year=${year}&month=${month}&employee_id=${employee_id}`, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: getRequestHeaders()
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(`Failed to fetch existing shifts: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+        }
+        
+        const shifts = await response.json();
+        
+        if (!shifts || shifts.length === 0) {
+            showProgress('No existing shifts found');
+            return;
+        }
+        
+        showProgress(`Found ${shifts.length} existing shifts. Deleting...`);
+        
+        // Delete each shift
+        for (const shift of shifts) {
+            const deleteResponse = await fetch(`https://api.factorialhr.com/attendance/shifts/${shift.id}`, {
+                method: 'DELETE',
+                redirect: 'follow',
+                headers: getRequestHeaders()
+            });
+            
+            if (!deleteResponse.ok) {
+                const errorData = await deleteResponse.json().catch(() => null);
+                throw new Error(`Failed to delete shift ${shift.id}: ${deleteResponse.status} ${deleteResponse.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+            }
+        }
+        
+        showProgress(`Successfully deleted ${shifts.length} existing shifts`);
+    } catch (error) {
+        console.error('Error deleting shifts:', error);
+        throw error;
+    }
+}
+
+// Function to get current employee ID from GraphQL
+async function getCurrentEmployeeId() {
+    try {
+        // Get current date in YYYY-MM-DD format
+        const today = new Date();
+        const currentDate = today.toISOString().split('T')[0];
+
+        const response = await fetch("https://api.factorialhr.com/graphql?GetCurrent", {
+            method: 'POST',
+            headers: {
+                ...getRequestHeaders(),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                operationName: "GetCurrent",
+                variables: {
+                    contractVersionsActiveOn: currentDate
+                },
+                query: `query GetCurrent($contractVersionsActiveOn: ISO8601Date!) {
+                    apiCore {
+                        currentsConnection {
+                            edges {
+                                node {
+                                    employee {
+                                        id
+                                        contractversionsConnection(activeOn: $contractVersionsActiveOn) {
+                                            edges {
+                                                node {
+                                                    id
+                                                    startsOn
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }`
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(`Failed to fetch employee ID: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+        }
+
+        const data = await response.json();
+        const employeeId = data?.data?.apiCore?.currentsConnection?.edges?.[0]?.node?.employee?.id;
+        
+        if (!employeeId) {
+            console.error('Full response:', data);
+            throw new Error('No employee ID found in response');
+        }
+
+        return employeeId;
+    } catch (error) {
+        console.error('Error fetching employee ID:', error);
+        throw error;
+    }
+}
+
+function fillTime() {
+    setLoading(true);
+    showProgress('Starting...');
+    
     const year = document.getElementById("input-year").value;
     const month = document.getElementById("input-month").value;
-    const employee_id = document.getElementById("input-employee-id").value;
-    if (employee_id == "") {
-        alert("Please enter an employee id, you can find it on your profile page");
+    
+    if (!year || !month) {
+        showProgress('Error: Please enter both month and year');
+        setLoading(false);
+        return;
     }
-    getPeriodId(year, month, employee_id);
+
+    // Get employee ID and proceed with the rest
+    getCurrentEmployeeId()
+        .then(employee_id => {
+            showProgress('Got employee ID, proceeding with time fill...');
+            return deleteExistingShifts(year, month, employee_id)
+                .then(() => getPeriodId(year, month, employee_id));
+        })
+        .catch(error => {
+            showProgress('Error: ' + error.message);
+            setLoading(false);
+        });
 }
 
 function getPeriodId(year, month, employee_id) {
+    showProgress('Fetching period information...');
+    
     var requestOptions = {
         method: 'GET',
         redirect: 'follow',
-      };
+        headers: getRequestHeaders()
+    };
 
-    const clock_in = document.getElementById("input-clock-in").value;
-    const clock_out = document.getElementById("input-clock-out").value;
+    const baseClockIn = document.getElementById("input-clock-in").value;
+    const baseClockOut = document.getElementById("input-clock-out").value;
 
-    let periodId;
+    if (!baseClockIn || !baseClockOut) {
+        showProgress('Error: Please enter both clock in and clock out times');
+        setLoading(false);
+        return;
+    }
 
-
-    fetch("https://api.factorialhr.com/attendance/periods?year=" + year + "&month=" + month + "&employee_id=" + employee_id, requestOptions)
-      .then(response => {console.log(response); return response.json()})
-      .then(result => {
-        console.log(result);
-        periodId = result[0]["id"]
-        fillMonth(
-            year,
-            month,
-            clock_in,
-            clock_out,
-            periodId
-        )
-      })
-      .catch(error => console.log('error', error));
-
-
-    return periodId;
+    // First get the calendar data for the entire month
+    getMonthCalendar(year, month, employee_id)
+        .then(calendarData => {
+            // Then get the period ID
+            return fetch("https://api.factorialhr.com/attendance/periods?year=" + year + "&month=" + month + "&employee_id=" + employee_id, requestOptions)
+                .then(async response => {
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => null);
+                        throw new Error(`Failed to fetch period: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+                    }
+                    return response.json();
+                })
+                .then(result => {
+                    if (!result || result.length === 0) {
+                        throw new Error('No period found for the specified month and year');
+                    }
+                    const periodId = result[0]["id"];
+                    fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarData);
+                });
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showProgress('Error: ' + error.message);
+            setLoading(false);
+        });
 }
-
 
 // Get weekdays for month and year
 function getWeekdaysForMonthAndYear(month, year) {
@@ -58,32 +343,95 @@ function getWeekdaysForMonthAndYear(month, year) {
     return weekdays;
 }
 
-function makeRequest(day, month, year, clock_in, clock_out, periodId) {
-    var formdata = new FormData();
-    formdata.append("clock_in", clock_in);
-    formdata.append("clock_out", clock_out);
-    formdata.append("date", year + "-" + month + "-" + day);
-    formdata.append("day", day);
-    formdata.append("period_id", periodId   );
-    
-    var requestOptions = {
-      method: 'POST',
-      body: formdata,
-      redirect: 'follow',
-    };
-    
-    fetch("https://api.factorialhr.com/attendance/shifts", requestOptions)
-      .then(response => response.text())
-      .then(result => console.log(result))
-      .catch(error => console.log('error', error));
+function makeRequest(day, month, year, baseClockIn, baseClockOut, periodId, calendarData) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            // Get planned hours for this day from calendar data
+            const plannedHours = getPlannedHoursForDay(calendarData, year, month, day);
+            
+            // Skip if planned hours is 0
+            if (plannedHours === 0) {
+                console.log(`Skipping day ${day}: No planned hours`);
+                resolve({ day, success: true, skipped: true });
+                return;
+            }
+            
+            // Generate random times for this day using planned hours
+            const { clockIn, clockOut } = generateRandomTimes(baseClockIn, baseClockOut, plannedHours);
+            
+            var formdata = new FormData();
+            formdata.append("clock_in", clockIn);
+            formdata.append("clock_out", clockOut);
+            formdata.append("date", year + "-" + month + "-" + day);
+            formdata.append("day", day);
+            formdata.append("period_id", periodId);
+            
+            var requestOptions = {
+                method: 'POST',
+                body: formdata,
+                redirect: 'follow',
+                headers: getRequestHeaders()
+            };
+            
+            const response = await fetch("https://api.factorialhr.com/attendance/shifts", requestOptions);
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => null);
+                throw new Error(`Failed to create shift for day ${day}: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+            }
+            
+            console.log(`Success for day ${day}: ${clockIn} - ${clockOut} (Planned: ${plannedHours}h)`);
+            resolve({ day, success: true, skipped: false });
+        } catch (error) {
+            console.error(`Error for day ${day}:`, error);
+            resolve({ day, success: false, error: error.message });
+        }
+    });
 }
 
+function fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarData) {
+    const weekdays = getWeekdaysForMonthAndYear(month, year);
+    let completedDays = 0;
+    let skippedDays = [];
+    let failedDays = [];
+    
+    showProgress(`Starting to fill ${weekdays.length} days...`);
+    
+    // Process days sequentially to avoid overwhelming the API
+    function processNextDay(index) {
+        if (index >= weekdays.length) {
+            // Show summary of results
+            let summaryMessage = `Completed ${completedDays} days`;
+            if (skippedDays.length > 0) {
+                summaryMessage += `\nSkipped days (no planned hours): ${skippedDays.join(', ')}`;
+            }
+            if (failedDays.length > 0) {
+                summaryMessage += `\nFailed days: ${failedDays.join(', ')}`;
+            }
+            showProgress(summaryMessage);
+            setLoading(false);
+            return;
+        }
 
-function fillMonth(year, month, clock_in, clock_out, periodId) {
-    weekdays = getWeekdaysForMonthAndYear(month, year)
-    weekdays.forEach(day => {
-        makeRequest(day, month, year, clock_in, clock_out, periodId)
-    });
+        const day = weekdays[index];
+        showProgress(`Processing day ${day} (${index + 1}/${weekdays.length})...`);
+        
+        makeRequest(day, month, year, baseClockIn, baseClockOut, periodId, calendarData)
+            .then(result => {
+                if (result.success) {
+                    if (result.skipped) {
+                        skippedDays.push(day);
+                    } else {
+                        completedDays++;
+                    }
+                } else {
+                    failedDays.push(day);
+                }
+                processNextDay(index + 1);
+            });
+    }
+
+    processNextDay(0);
 }
 
 
