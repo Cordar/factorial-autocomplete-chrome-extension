@@ -53,7 +53,7 @@ function generateRandomTimes(baseClockIn, baseClockOut, plannedHours) {
     const clockOutDeviation = Math.floor(Math.random() * 3);
     
     // Calculate new clock out time, ensuring it's at least planned hours after clock in
-    // Add 2 minutes to ensure we always meet the minimum hours
+    // Add 3 minutes to ensure we always meet the minimum hours
     const newClockOutMinutes = Math.max(minClockOutMinutes + 3, baseOutMinutes + clockOutDeviation);
     
     // Convert back to HH:MM format
@@ -298,49 +298,33 @@ async function fillTime() {
     }
 }
 
-function getPeriodId(year, month, employee_id) {
+async function getPeriodId(year, month, employee_id) {
     showProgress('Fetching period information...');
     
-    var requestOptions = {
-        method: 'GET',
-        redirect: 'follow',
-        headers: getRequestHeaders()
-    };
-
-    const baseClockIn = document.getElementById("input-clock-in").value;
-    const baseClockOut = document.getElementById("input-clock-out").value;
-
-    if (!baseClockIn || !baseClockOut) {
-        showProgress('Error: Please enter both clock in and clock out times');
-        setLoading(false);
-        return;
-    }
-
-    // First get the calendar data for the entire month
-    getMonthCalendar(year, month, employee_id)
-        .then(calendarData => {
-            // Then get the period ID
-            return fetch("https://api.factorialhr.com/attendance/periods?year=" + year + "&month=" + month + "&employee_id=" + employee_id, requestOptions)
-                .then(async response => {
-                    if (!response.ok) {
-                        const errorData = await response.json().catch(() => null);
-                        throw new Error(`Failed to fetch period: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
-                    }
-                    return response.json();
-                })
-                .then(result => {
-                    if (!result || result.length === 0) {
-                        throw new Error('No period found for the specified month and year');
-                    }
-                    const periodId = result[0]["id"];
-                    return periodId;
-                });
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showProgress('Error: ' + error.message);
-            setLoading(false);
+    try {
+        const response = await fetch(`https://api.factorialhr.com/attendance/periods?year=${year}&month=${month}&employee_id=${employee_id}`, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: getRequestHeaders()
         });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(`Failed to fetch period: ${response.status} ${response.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+        }
+
+        const result = await response.json();
+        if (!result || result.length === 0) {
+            throw new Error('No period found for the specified month and year');
+        }
+
+        return result[0]["id"];
+    } catch (error) {
+        console.error('Error:', error);
+        showProgress('Error: ' + error.message);
+        setLoading(false);
+        throw error;
+    }
 }
 
 // Get weekdays for month and year
@@ -358,79 +342,76 @@ function getWeekdaysForMonthAndYear(month, year) {
     return weekdays;
 }
 
-function makeRequest(day, month, year, baseClockIn, baseClockOut, periodId, calendarData) {
-    return new Promise(async (resolve, reject) => {
-        try {
-            // Get planned hours for this day from calendar data
-            const plannedHours = getPlannedHoursForDay(calendarData, year, month, day);
-            
-            // Skip if planned hours is 0
-            if (plannedHours === 0) {
-                console.log(`Skipping day ${day}: No planned hours`);
-                resolve({ day, success: true, skipped: true });
-                return;
-            }
-
-            // Calculate morning shift (before lunch)
-            const morningEnd = "13:30";
-            // Subtract 1 hour from total planned hours to account for lunch break
-            const adjustedPlannedHours = plannedHours - 1;
-            const { clockIn: morningClockIn, clockOut: morningClockOut } = generateRandomTimes(baseClockIn, morningEnd, adjustedPlannedHours / 2);
-            
-            // Calculate afternoon shift (after lunch)
-            const afternoonStart = "14:30";
-            const { clockIn: afternoonClockIn, clockOut: afternoonClockOut } = generateRandomTimes(afternoonStart, baseClockOut, adjustedPlannedHours / 2);
-
-            // Create morning shift
-            const morningFormData = new FormData();
-            morningFormData.append("clock_in", morningClockIn);
-            morningFormData.append("clock_out", morningClockOut);
-            morningFormData.append("date", year + "-" + month + "-" + day);
-            morningFormData.append("day", day);
-            morningFormData.append("period_id", periodId);
-            
-            const morningResponse = await fetch("https://api.factorialhr.com/attendance/shifts", {
-                method: 'POST',
-                body: morningFormData,
-                redirect: 'follow',
-                headers: getRequestHeaders()
-            });
-            
-            if (!morningResponse.ok) {
-                const errorData = await morningResponse.json().catch(() => null);
-                throw new Error(`Failed to create morning shift for day ${day}: ${morningResponse.status} ${morningResponse.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
-            }
-
-            // Create afternoon shift
-            const afternoonFormData = new FormData();
-            afternoonFormData.append("clock_in", afternoonClockIn);
-            afternoonFormData.append("clock_out", afternoonClockOut);
-            afternoonFormData.append("date", year + "-" + month + "-" + day);
-            afternoonFormData.append("day", day);
-            afternoonFormData.append("period_id", periodId);
-            
-            const afternoonResponse = await fetch("https://api.factorialhr.com/attendance/shifts", {
-                method: 'POST',
-                body: afternoonFormData,
-                redirect: 'follow',
-                headers: getRequestHeaders()
-            });
-            
-            if (!afternoonResponse.ok) {
-                const errorData = await afternoonResponse.json().catch(() => null);
-                throw new Error(`Failed to create afternoon shift for day ${day}: ${afternoonResponse.status} ${afternoonResponse.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
-            }
-            
-            console.log(`Success for day ${day}: Morning ${morningClockIn}-${morningClockOut}, Afternoon ${afternoonClockIn}-${afternoonClockOut} (Planned: ${plannedHours}h)`);
-            resolve({ day, success: true, skipped: false });
-        } catch (error) {
-            console.error(`Error for day ${day}:`, error);
-            resolve({ day, success: false, error: error.message });
+async function makeRequest(day, month, year, baseClockIn, baseClockOut, periodId, calendarData) {
+    try {
+        // Get planned hours for this day from calendar data
+        const plannedHours = getPlannedHoursForDay(calendarData, year, month, day);
+        
+        // Skip if planned hours is 0
+        if (plannedHours === 0) {
+            console.log(`Skipping day ${day}: No planned hours`);
+            return { day, success: true, skipped: true };
         }
-    });
+
+        // Calculate morning shift (before lunch)
+        const morningEnd = "13:30";
+        // Subtract 1 hour from total planned hours to account for lunch break
+        const adjustedPlannedHours = plannedHours - 1;
+        const { clockIn: morningClockIn, clockOut: morningClockOut } = generateRandomTimes(baseClockIn, morningEnd, adjustedPlannedHours / 2);
+        
+        // Calculate afternoon shift (after lunch)
+        const afternoonStart = "14:30";
+        const { clockIn: afternoonClockIn, clockOut: afternoonClockOut } = generateRandomTimes(afternoonStart, baseClockOut, adjustedPlannedHours / 2);
+
+        // Create morning shift
+        const morningFormData = new FormData();
+        morningFormData.append("clock_in", morningClockIn);
+        morningFormData.append("clock_out", morningClockOut);
+        morningFormData.append("date", year + "-" + month + "-" + day);
+        morningFormData.append("day", day);
+        morningFormData.append("period_id", periodId);
+        
+        const morningResponse = await fetch("https://api.factorialhr.com/attendance/shifts", {
+            method: 'POST',
+            body: morningFormData,
+            redirect: 'follow',
+            headers: getRequestHeaders()
+        });
+        
+        if (!morningResponse.ok) {
+            const errorData = await morningResponse.json().catch(() => null);
+            throw new Error(`Failed to create morning shift for day ${day}: ${morningResponse.status} ${morningResponse.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+        }
+
+        // Create afternoon shift
+        const afternoonFormData = new FormData();
+        afternoonFormData.append("clock_in", afternoonClockIn);
+        afternoonFormData.append("clock_out", afternoonClockOut);
+        afternoonFormData.append("date", year + "-" + month + "-" + day);
+        afternoonFormData.append("day", day);
+        afternoonFormData.append("period_id", periodId);
+        
+        const afternoonResponse = await fetch("https://api.factorialhr.com/attendance/shifts", {
+            method: 'POST',
+            body: afternoonFormData,
+            redirect: 'follow',
+            headers: getRequestHeaders()
+        });
+        
+        if (!afternoonResponse.ok) {
+            const errorData = await afternoonResponse.json().catch(() => null);
+            throw new Error(`Failed to create afternoon shift for day ${day}: ${afternoonResponse.status} ${afternoonResponse.statusText}${errorData ? ` - ${JSON.stringify(errorData)}` : ''}`);
+        }
+        
+        console.log(`Success for day ${day}: Morning ${morningClockIn}-${morningClockOut}, Afternoon ${afternoonClockIn}-${afternoonClockOut} (Planned: ${plannedHours}h)`);
+        return { day, success: true, skipped: false };
+    } catch (error) {
+        console.error(`Error for day ${day}:`, error);
+        return { day, success: false, error: error.message };
+    }
 }
 
-function fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarData) {
+async function fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarData) {
     const weekdays = getWeekdaysForMonthAndYear(month, year);
     let completedDays = 0;
     let skippedDays = [];
@@ -438,47 +419,34 @@ function fillMonth(year, month, baseClockIn, baseClockOut, periodId, calendarDat
     
     showProgress(`Starting to fill ${weekdays.length} days...`);
     
-    // Process days sequentially to avoid overwhelming the API
-    function processNextDay(index) {
-        if (index >= weekdays.length) {
-            // Show summary of results
-            let summaryMessage = `Summary:\n`;
-            summaryMessage += `Completed: ${completedDays} days\n`;
-            if (skippedDays.length > 0) {
-                summaryMessage += `Skipped: ${skippedDays.join(', ')}\n`;
-            }
-            if (failedDays.length > 0) {
-                summaryMessage += `Failed: ${failedDays.join(', ')}`;
-            }
-            showProgress(summaryMessage);
-            setLoading(false); // Enable button only after all operations are complete
-            return;
-        }
-
-        const day = weekdays[index];
-        showProgress(`Processing day ${day} (${index + 1}/${weekdays.length})...`);
+    // Process days sequentially
+    for (let i = 0; i < weekdays.length; i++) {
+        const day = weekdays[i];
+        showProgress(`Processing day ${day} (${i + 1}/${weekdays.length})...`);
         
-        makeRequest(day, month, year, baseClockIn, baseClockOut, periodId, calendarData)
-            .then(result => {
-                if (result.success) {
-                    if (result.skipped) {
-                        skippedDays.push(day);
-                    } else {
-                        completedDays++;
-                    }
-                } else {
-                    failedDays.push(day);
-                }
-                processNextDay(index + 1);
-            })
-            .catch(error => {
-                console.error(`Error processing day ${day}:`, error);
-                failedDays.push(day);
-                processNextDay(index + 1);
-            });
+        const result = await makeRequest(day, month, year, baseClockIn, baseClockOut, periodId, calendarData);
+        if (result.success) {
+            if (result.skipped) {
+                skippedDays.push(day);
+            } else {
+                completedDays++;
+            }
+        } else {
+            failedDays.push(day);
+        }
     }
 
-    processNextDay(0);
+    // Show summary of results
+    let summaryMessage = `Summary:\n`;
+    summaryMessage += `Completed: ${completedDays} days\n`;
+    if (skippedDays.length > 0) {
+        summaryMessage += `Skipped: ${skippedDays.join(', ')}\n`;
+    }
+    if (failedDays.length > 0) {
+        summaryMessage += `Failed: ${failedDays.join(', ')}`;
+    }
+    showProgress(summaryMessage);
+    setLoading(false); // Enable button only after all operations are complete
 }
 
 
