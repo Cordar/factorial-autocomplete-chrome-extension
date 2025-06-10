@@ -91,9 +91,7 @@ function getRequestHeaders() {
         'sec-fetch-site': 'same-site',
         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
         'x-deployment-phase': 'default',
-        'x-factorial-access': '2228783',
-        'x-factorial-origin': 'web',
-        'x-factorial-version': 'fb8cebd66ad5ee23500af66255a2bc82d7e33125'
+        'x-factorial-origin': 'web'
     };
 }
 
